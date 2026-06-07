@@ -213,7 +213,7 @@ def simulate_episode(mods, params, args):
 
     rng_post = np.random.default_rng(params.seed + 202)
     renderer = TopRenderer(model, params, args.resolution,
-                           rng=np.random.default_rng(params.seed + 13))
+                           rng=np.random.default_rng(params.seed + 13), body_id=top_bid)
     post = PostProcessor(rng_post)
     fw = FrameWriter(os.path.join(args.out, "frames"), params.episode_id,
                      jpg_quality=args.jpg_quality)

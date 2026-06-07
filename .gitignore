@@ -9,6 +9,8 @@ output/
 test_output/
 val_out/
 res_out/
+dataset_test/
+dataset_test_2/
 
 # Real floor textures the user may drop in (keep folder + README)
 assets/floors/*

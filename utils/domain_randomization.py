@@ -166,9 +166,9 @@ _COM_HEIGHT_RANGE = {
 
 # Rango de tilt por tipo (rad). El oval admite tilt mayor (mas inestable).
 _TILT_RANGE = {
-    "cone": (0.01, 0.10),
-    "acorn": (0.01, 0.10),
-    "oval": (0.03, 0.16),
+    "cone": (0.01, 0.06),
+    "acorn": (0.01, 0.06),
+    "oval": (0.03, 0.08),
 }
 
 
@@ -203,18 +203,34 @@ def sample_episode_params(
     # --- Masa (50-300 g) ---
     mass = float(rng.uniform(0.05, 0.30))
 
+    # Radio del cuerpo del trompo en rango realista [1 cm, 4 cm]
+    body_radius = float(rng.uniform(0.01, 0.04))
+
+    # Factor de forma para sólidos de revolución (cono~0.3, disco~0.5)
+    shape_factor = float(rng.uniform(0.25, 0.50))
+
     # --- Inercia (ver nota de cabecera). Izz = eje de spin (mayor). ---
-    It = float(rng.uniform(1e-5, 5e-4))            # transversal base
+    It = shape_factor * mass * body_radius**2           # transversal base
     Ixx = It
     Iyy = It * float(rng.uniform(0.96, 1.04))      # leve asimetria => nutacion
-    ratio = float(rng.uniform(1.05, 1.85))         # oblatez (spin > transversal)
+    ratio = float(rng.uniform(0.25, 0.75))         # oblatez (spin > transversal)
     Izz = min(Ixx, Iyy) * ratio
     Izz = float(np.clip(Izz, 2e-5, 1e-3))
     # Garantizar triangle inequality con margen (Ixx + Iyy >= Izz).
     Izz = float(min(Izz, 0.98 * (Ixx + Iyy)))
 
+    # --- Geometria derivada del tipo ---
+    clo, chi = _COM_HEIGHT_RANGE[top_type]
+    com_height = float(rng.uniform(clo, chi))
+    geom_seed = int(rng.integers(0, 2**31 - 1))
+
     # --- Spin inicial (rad/s) con signo aleatorio ---
-    spin = float(rng.uniform(40.0, 250.0)) * float(rng.choice([-1.0, 1.0]))
+    # Fisica correcta: omega_crit = 2*sqrt(m*g*l*It) / Izz   (trompo prolato)
+    pivot_to_com = com_height + TIP_RADIUS
+    omega_crit = 2.0 * np.sqrt(mass * 9.81 * pivot_to_com * It) / Izz
+    omega_min = max(80.0, 2.2 * omega_crit)          # nunca bajo de 80, y siempre > crit
+    omega_max = omega_min + 300.0                     # rango razonable por encima
+    spin = float(rng.uniform(omega_min, omega_max)) * float(rng.choice([-1.0, 1.0]))
 
     # --- Tilt inicial (rad) ---
     tlo, thi = _TILT_RANGE[top_type]
@@ -222,25 +238,22 @@ def sample_episode_params(
 
     # --- Fricciones (NO hardcodeadas) ---
     friction_slide = float(rng.uniform(0.4, 1.0))
-    friction_spin = float(rng.uniform(0.001, 0.01))
+    friction_spin = float(rng.uniform(0.0001, 0.001))
     friction_roll = float(rng.uniform(1e-5, 1e-4))
-    coulomb_torque = float(rng.uniform(0.0005, 0.005))
-    viscous_friction = float(rng.uniform(1e-5, 1e-4))
+    coulomb_torque = float(rng.uniform(1e-5, 5e-4))
+    viscous_friction = float(rng.uniform(1e-6, 1e-5))
 
     # --- Altura de la punta en t=0 (casi apoyado) ---
     position_z = float(rng.uniform(0.001, 0.005))
 
-    # --- Geometria derivada del tipo ---
-    clo, chi = _COM_HEIGHT_RANGE[top_type]
-    com_height = float(rng.uniform(clo, chi))
-    geom_seed = int(rng.integers(0, 2**31 - 1))
+    
 
     # --- Camara (Seccion 7.1) ---
-    cam_distance = float(rng.uniform(0.30, 0.70))
+    cam_distance = float(rng.uniform(0.10, 0.20))
     cam_azimuth = float(rng.uniform(0.0, 360.0))
     cam_elevation = float(-rng.uniform(20.0, 60.0))  # MuJoCo: elevacion negativa mira hacia abajo
     cam_fov = float(rng.uniform(50.0, 70.0))
-    lookat_z = position_z + float(rng.uniform(0.015, 0.025))  # ~2 cm sobre la base
+    lookat_z = position_z + com_height + TIP_RADIUS  # ~2 cm sobre la base
     cam_lookat = (
         float(rng.uniform(-0.005, 0.005)),
         float(rng.uniform(-0.005, 0.005)),

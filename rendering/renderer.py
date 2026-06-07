@@ -32,11 +32,12 @@ def resolution_to_hw(resolution: int) -> Tuple[int, int]:
 
 class TopRenderer:
     def __init__(self, model: mujoco.MjModel, params, resolution: int,
-                 rng: np.random.Generator | None = None):
+                 rng: np.random.Generator, body_id: None | None = None):
         self.height, self.width = resolution_to_hw(resolution)
         self.model = model
         self.renderer = mujoco.Renderer(model, height=self.height, width=self.width)
         self.rng = rng if rng is not None else np.random.default_rng(params.seed + 13)
+        self.body_id = body_id
 
         # Camara libre configurada con los parametros DR del episodio.
         cam = mujoco.MjvCamera()
@@ -57,14 +58,18 @@ class TopRenderer:
         Si jitter=True, aplica una vibracion de camara ~0.1 mm (obturador),
         usada entre subframes para un motion blur mas realista.
         """
-        if jitter:
-            j = self.rng.normal(0.0, 1e-4, 3)  # ~0.1 mm
-            self.cam.lookat[:] = self._base_lookat + j
+        # Actualizar lookat a la posición actual del body
+        if self.body_id is not None:
+            body_pos = data.xpos[self.body_id]
+            self.cam.lookat[:] = body_pos
         else:
             self.cam.lookat[:] = self._base_lookat
 
-        self.renderer.update_scene(data, camera=self.cam,
-                                   scene_option=self.scene_option)
+        if jitter:
+            j = self.rng.normal(0.0, 1e-4, 3)
+            self.cam.lookat[:] += j
+
+        self.renderer.update_scene(data, camera=self.cam)
         return self.renderer.render()
 
     @property
