@@ -205,7 +205,7 @@ def sample_episode_params(
         top_type = top_type_arg
 
     # --- Masa (50-300 g) ---
-    mass = float(rng.uniform(0.05, 0.30))
+    mass = float(rng.uniform(0.05, 0.50))
 
     # Radio del cuerpo del trompo en rango realista [1 cm, 4 cm]
     body_radius = float(rng.uniform(0.01, 0.04))
@@ -216,9 +216,9 @@ def sample_episode_params(
     # --- Inercia (ver nota de cabecera). Izz = eje de spin (mayor). ---
     It = shape_factor * mass * body_radius**2           # transversal base
     Ixx = It
-    Iyy = It * float(rng.uniform(0.96, 1.04))      # leve asimetria => nutacion
-    ratio = float(rng.uniform(0.25, 0.75))         # oblatez (spin > transversal)
-    Izz = min(Ixx, Iyy) * ratio
+    Iyy = It * float(rng.uniform(0.86, 1.20))      # leve asimetria => nutacion
+    ratio = float(rng.uniform(1.05, 1.85))         # oblatez (spin > transversal)
+    Izz = max(Ixx, Iyy) * ratio 
     Izz = float(np.clip(Izz, 2e-5, 1e-3))
     # Garantizar triangle inequality con margen (Ixx + Iyy >= Izz).
     Izz = float(min(Izz, 0.98 * (Ixx + Iyy)))
@@ -241,11 +241,11 @@ def sample_episode_params(
     tilt = float(rng.uniform(tlo, thi))
 
     # --- Fricciones (NO hardcodeadas) ---
-    friction_slide = float(rng.uniform(0.4, 1.0))
+    friction_slide = float(rng.uniform(0.2, 1.2))
     friction_spin = float(rng.uniform(0.0001, 0.001))
     friction_roll = float(rng.uniform(1e-5, 1e-4))
-    coulomb_torque = float(rng.uniform(1e-5, 5e-4))
-    viscous_friction = float(rng.uniform(1e-6, 1e-5))
+    coulomb_torque = float(rng.uniform(1e-6, 5e-5))
+    viscous_friction = float(rng.uniform(1e-7, 1e-5))
 
     # --- Altura de la punta en t=0 (casi apoyado) ---
     position_z = float(rng.uniform(0.001, 0.005))

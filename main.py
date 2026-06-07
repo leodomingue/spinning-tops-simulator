@@ -31,11 +31,11 @@ import numpy as np
 PHYS_DT = 0.001          # 1 ms (1000 Hz integracion interna)
 STATE_EVERY = 10         # guardar estado cada 10 pasos => 100 Hz
 VIDEO_FPS = 30
-MAX_T = 20.0             # duracion maxima (s)
+MAX_T = 15.0             # duracion maxima (s)
 FALL_ANGLE_DEG = 70.0    # umbral de caida por angulo
 OMEGA_REST = 0.1         # rad/s, umbral de "spin ~ cero"
 VEL_REST = 0.01          # m/s, umbral de reposo lineal (modo video)
-POST_FALL_SECONDS = 1.0  # tras la caida se graba solo este extra (s)
+POST_FALL_SECONDS = 0.5  # tras la caida se graba solo este extra (s)
 
 
 # --------------------------------------------------------------------------- #
