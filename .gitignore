@@ -1,0 +1,23 @@
+# Generated datasets / outputs
+dataset/frames/
+dataset/states/
+dataset/trajectories/
+dataset/video_debug/
+dataset/ude/
+dataset/progress.json
+output/
+test_output/
+val_out/
+res_out/
+
+# Real floor textures the user may drop in (keep folder + README)
+assets/floors/*
+!assets/floors/README.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/

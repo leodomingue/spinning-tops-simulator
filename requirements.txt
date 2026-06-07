@@ -1,0 +1,11 @@
+mujoco>=3.1.0
+numpy>=1.24
+opencv-python>=4.8        # escritura JPG rapida + post-processing
+imageio>=2.31             # MP4 debug opcional
+imageio-ffmpeg>=0.4.9     # backend H.264 para --save-mp4
+scipy>=1.10               # ruido/turbulencia para suelos procedurales
+noise>=1.2.2              # Perlin (opcional; si falla, fractal con numpy)
+tqdm>=4.66
+Pillow>=10.0
+# torch es OPCIONAL: solo se usa, via try/except, para torch.cuda.empty_cache()
+# durante el cooling en Vast.ai. El simulador funciona sin torch.
