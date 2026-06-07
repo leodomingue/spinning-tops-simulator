@@ -131,6 +131,10 @@ class EpisodeParams:
     # --- Suelo (lo rellena floor_generator) ---
     floor_type: str = "pending"
 
+    # --- Marcadores de color (los rellena physics/top_model.build_top_model_xml).
+    # Lista de {pos:[x,y,z] (local), rgba:[r,g,b,1], radius}. >=3 no colineales.
+    markers: list | None = None
+
     def physics_metadata(self) -> dict:
         """Bloque ``physics`` del JSON de estados (constantes por episodio)."""
         return {

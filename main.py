@@ -35,6 +35,7 @@ MAX_T = 20.0             # duracion maxima (s)
 FALL_ANGLE_DEG = 70.0    # umbral de caida por angulo
 OMEGA_REST = 0.1         # rad/s, umbral de "spin ~ cero"
 VEL_REST = 0.01          # m/s, umbral de reposo lineal (modo video)
+POST_FALL_SECONDS = 1.0  # tras la caida se graba solo este extra (s)
 
 
 # --------------------------------------------------------------------------- #
@@ -171,16 +172,36 @@ def simulate_episode(mods, params, args):
 
     logger = StateLogger(params, mode)
     fall_latched = False
+    fall_time = [None]                  # holder mutable: t de la primera caida
+    post_fall = float(args.post_fall_seconds)
 
     def log_current(t):
         nonlocal fall_latched
         q, omega, v, x, has_c, fmag, angle = _compute_state(
             mujoco, model, data, qadr, top_bid, floor_gid, angle_from_vertical_deg)
         wn = float(np.linalg.norm(omega))
+        # Estado INSTANTANEO de ese frame (flag pedida en el JSON).
+        if wn < OMEGA_REST:
+            motion_state = "stopped"     # detenido (dejo de girar)
+        elif angle > FALL_ANGLE_DEG:
+            motion_state = "fallen"      # se cayo (sigue moviendose)
+        else:
+            motion_state = "spinning"    # de pie y girando
         fall_now = (angle > FALL_ANGLE_DEG) or (wn < OMEGA_REST)
+        if fall_now and not fall_latched:
+            fall_time[0] = t             # primer instante de caida (latch)
         fall_latched = fall_latched or fall_now
-        logger.add_state(t, q, omega, x, v, has_c, fmag, angle, fall_latched)
+        logger.add_state(t, q, omega, x, v, has_c, fmag, angle,
+                         fall_latched, motion_state)
         return wn, float(np.linalg.norm(v)), angle
+
+    def reached_end(t):
+        """Fin de la simulacion: 20 s como tope, o (caida + post_fall)."""
+        if t >= MAX_T:
+            return True
+        if fall_time[0] is not None and t >= fall_time[0] + post_fall:
+            return True
+        return False
 
     # Estado inicial (t=0, indice de estado 0)
     log_current(0.0)
@@ -194,17 +215,20 @@ def simulate_episode(mods, params, args):
             mujoco.mj_step(model, data)
             step_count += 1
             if step_count % STATE_EVERY == 0:
-                wn, vn, angle = log_current(data.time)
-                # Cortar al detectar caida o reposo o 20 s.
-                if wn < OMEGA_REST or angle > FALL_ANGLE_DEG or data.time >= MAX_T:
+                log_current(data.time)
+                # Se graba el movimiento inicial + post_fall s tras la caida
+                # (o reposo), con tope de 20 s. La caida queda registrada.
+                if reached_end(data.time):
                     break
             elif data.time >= MAX_T:
                 break
 
         states_path = os.path.join(args.out, "trajectories",
                                    f"ep_{params.episode_id:04d}.json")
-        meta = logger.write(states_path, video_fps=None)
+        meta = logger.write(states_path, video_fps=None,
+                            post_fall_seconds=post_fall)
         meta["_states_path"] = states_path
+        meta["_fall_time"] = fall_time[0]
         return meta
 
     # ========================= MODO VIDEO ========================= #
@@ -268,12 +292,9 @@ def simulate_episode(mods, params, args):
             vw.append(frame)
         prev_step = target_step
 
-        # En video se sigue grabando aunque caiga; se para en reposo o 20 s.
-        q = np.array(data.qpos[qadr + 3: qadr + 7])
-        omega = np.array(data.cvel[top_bid][0:3])
-        v = np.array(data.cvel[top_bid][3:6])
-        if (np.linalg.norm(omega) < OMEGA_REST and np.linalg.norm(v) < VEL_REST) \
-                or data.time >= MAX_T:
+        # En video se sigue grabando AUNQUE caiga, pero solo post_fall s mas
+        # tras la caida (todo el movimiento inicial + ~1 s). Tope de 20 s.
+        if reached_end(data.time):
             done = True
 
     # Escribir estados (100 Hz) + index de frames (clamp de state_idx).
@@ -283,7 +304,8 @@ def simulate_episode(mods, params, args):
 
     states_path = os.path.join(args.out, "states",
                                f"ep_{params.episode_id:04d}.json")
-    meta = logger.write(states_path, video_fps=VIDEO_FPS)
+    meta = logger.write(states_path, video_fps=VIDEO_FPS,
+                        post_fall_seconds=post_fall)
     fw.write_index(VIDEO_FPS, (renderer.height, renderer.width))
     if vw:
         vw.close()
@@ -291,6 +313,7 @@ def simulate_episode(mods, params, args):
 
     meta["_states_path"] = states_path
     meta["_n_frames"] = len(fw.index_entries)
+    meta["_fall_time"] = fall_time[0]
     return meta
 
 
@@ -335,6 +358,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--cooling-interval", type=int, default=None)
     p.add_argument("--save-mp4", action="store_true", default=False)
     p.add_argument("--real-floor-prob", type=float, default=0.3)
+    p.add_argument("--post-fall-seconds", type=float, default=POST_FALL_SECONDS,
+                   help="segundos a grabar despues de detectar la caida "
+                        "(p.ej. 1.0 o 0.5); el resto se descarta")
     p.add_argument("--jpg-quality", type=int, default=95)
     p.add_argument("--seed", type=int, default=None,
                    help="semilla base reproducible (si se omite, aleatoria)")
@@ -440,6 +466,15 @@ def main(argv=None) -> int:
         if validate_physics is not None and "_states_path" in meta:
             valid, _ = validate_physics(meta["_states_path"])
         n_valid += int(valid)
+
+        # Informe por episodio: cuando y como cae el trompo.
+        ft = meta.get("_fall_time")
+        sim = meta.get("simulation", {})
+        ft_str = f"{ft:.2f}s" if ft is not None else "no cae"
+        print(f"[EP {ep:04d}] type={params.top_type:5s} fall={ft_str} "
+              f"dur={sim.get('duration_seconds')}s "
+              f"states={sim.get('total_state_frames')} "
+              f"frames={meta.get('_n_frames', '-')} valid={valid}", flush=True)
 
         write_progress(args.out, {
             "base_seed": args.seed,

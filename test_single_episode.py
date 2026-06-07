@@ -46,8 +46,18 @@ def _summary(json_path: str, label: str):
     print(f"  total_state_frm : {m['simulation']['total_state_frames']} (100 Hz)")
     print(f"  video_fps       : {m['simulation']['video_fps']}")
     print(f"  fall_time       : {m['fall_time']}")
+    print(f"  post_fall_secs  : {m['simulation'].get('post_fall_seconds')}")
     print(f"  frames validos  : {n_valid} (fall_detected==False)")
+    print(f"  n markers       : {len(m.get('markers', []))} (puntos de color)")
+    from collections import Counter
+    print(f"  motion_state    : {dict(Counter(f['motion_state'] for f in fr))}")
     print(f"  metadata.valid  : {m['valid']}")
+    # Si cae, la duracion debe ser ~ fall_time + post_fall.
+    if m["fall_time"] is not None and m["simulation"].get("post_fall_seconds"):
+        expected = m["fall_time"] + m["simulation"]["post_fall_seconds"]
+        got = m["simulation"]["duration_seconds"]
+        print(f"  check post-fall : dur={got}s ~ fall+post={expected:.2f}s "
+              f"-> {'OK' if abs(got - expected) < 0.2 else 'REVISAR'}")
     return doc
 
 
@@ -95,13 +105,13 @@ def main() -> int:
     print("\n########## Generando episodio VIDEO ##########")
     sim_main.main(["--mode", "video", "--n", "1", "--out", OUT,
                    "--top-type", "cone", "--resolution", "224",
-                   "--subframes", "2", "--seed", "5",
+                   "--subframes", "2", "--seed", "13",
                    "--no-cooling-sleep", "--no-validate"])
 
     # 2) Episodio TRAYECTORIAS (seed elegido para que caiga -> cut-on-fall real).
     print("\n########## Generando episodio TRAYECTORIAS ##########")
     sim_main.main(["--mode", "trajectories", "--n", "1", "--out", OUT,
-                   "--top-type", "oval", "--seed", "26",
+                   "--top-type", "oval", "--seed", "5",
                    "--no-cooling-sleep", "--no-validate"])
 
     # 3) Validacion + resumen
@@ -139,7 +149,36 @@ def main() -> int:
                               "--target", "both", "--cut-on-fall"])
     _check_npz(os.path.join(OUT, "ude_traj", "ep_0000.npz"), "TRAYECTORIAS")
 
-    print("\n[TEST OK] pipeline completo (video + trayectorias + UDE) funcional.")
+    # 5) export_to_parquet (opcional: requiere la libreria 'datasets').
+    # IMPORTANTE: se ejecuta en un SUBPROCESO. Mezclar el contexto GL de MuJoCo
+    # (usado al renderizar el video) con datasets/pyarrow/PIL en el MISMO
+    # proceso provoca un segfault en libs nativas. El flujo real ya son dos
+    # comandos separados (generar -> exportar), asi que esto refleja el uso.
+    print("\n########## export_to_parquet (HuggingFace) ##########")
+    import subprocess
+    # NO importar 'datasets' en ESTE proceso: tras usar el contexto GL de MuJoCo
+    # (render del video), importar datasets/pyarrow/PIL aqui segfaultea por
+    # conflicto de libs nativas. Se comprueba e invoca todo en subprocesos.
+    has_datasets = subprocess.run(
+        [sys.executable, "-c", "import datasets, pyarrow"],
+        capture_output=True).returncode == 0
+
+    if has_datasets:
+        hf_out = os.path.join(OUT, "hf_export")
+        r = subprocess.run([sys.executable, "export_to_parquet.py", "--in", OUT,
+                            "--out", hf_out, "--what", "all"])
+        fp = os.path.join(hf_out, "frames.parquet")
+        ok = (r.returncode == 0 and os.path.isfile(fp))
+        if ok:
+            mb = os.path.getsize(fp) / 1e6
+            print(f"[PARQUET] OK -> {fp} ({mb:.2f} MB) "
+                  f"+ states.parquet + trajectories.parquet")
+        assert ok, "export_to_parquet fallo"
+    else:
+        print("[PARQUET] 'datasets' no instalado -> paso omitido. "
+              "Instala con: pip install datasets pyarrow")
+
+    print("\n[TEST OK] pipeline completo (video + trayectorias + UDE + parquet).")
     print(f"[TEST] salida en: {os.path.abspath(OUT)}")
     return 0
 

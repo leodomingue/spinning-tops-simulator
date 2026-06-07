@@ -31,8 +31,16 @@ class StateLogger:
 
     def add_state(self, t: float, q, omega, x, v,
                   has_contact: bool, contact_force: float,
-                  angle_from_vertical: float, fall_detected: bool) -> None:
-        """Anade un frame de estado (a 100 Hz)."""
+                  angle_from_vertical: float, fall_detected: bool,
+                  motion_state: str = "spinning") -> None:
+        """Anade un frame de estado (a 100 Hz).
+
+        ``fall_detected`` es el latch monotono (para el cutoff de la UDE).
+        ``motion_state`` es el estado INSTANTANEO de ese frame:
+          * "spinning" : de pie y girando (no ha caido todavia).
+          * "fallen"   : se cayo (angulo > umbral) pero aun se mueve.
+          * "stopped"  : practicamente detenido (||omega|| ~ 0).
+        """
         self.frames.append({
             "t": _r(t, 5),
             "q": _r(q, 7),
@@ -43,6 +51,7 @@ class StateLogger:
             "contact_force": _r(contact_force, 4),
             "angle_from_vertical": _r(angle_from_vertical, 3),
             "fall_detected": bool(fall_detected),
+            "motion_state": str(motion_state),
         })
 
     @property
@@ -56,7 +65,8 @@ class StateLogger:
                 return fr["t"]
         return None
 
-    def write(self, path: str, video_fps: Optional[int]) -> dict:
+    def write(self, path: str, video_fps: Optional[int],
+              post_fall_seconds: Optional[float] = None) -> dict:
         """Escribe el JSON y devuelve la metadata (para progress/manifest)."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         duration = self.frames[-1]["t"] if self.frames else 0.0
@@ -69,6 +79,9 @@ class StateLogger:
             "top_type": self.params.top_type,
             "floor_type": self.params.floor_type,
             "physics": self.params.physics_metadata(),
+            # Marcadores de color (constantes por episodio): posiciones locales
+            # y colores de los >=3 puntos no colineales pegados al cuerpo.
+            "markers": (self.params.markers or []),
             "simulation": {
                 "physics_timestep": 0.001,
                 "state_sample_rate_hz": 100,
@@ -76,6 +89,8 @@ class StateLogger:
                 "integrator": "implicitfast",
                 "duration_seconds": _r(duration, 4),
                 "total_state_frames": len(self.frames),
+                "post_fall_seconds": (float(post_fall_seconds)
+                                      if post_fall_seconds is not None else None),
             },
             "fall_time": (_r(fall_time, 5) if fall_time is not None else None),
             "valid": True,  # validate_physics() puede ponerlo a false despues

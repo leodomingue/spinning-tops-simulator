@@ -11,6 +11,7 @@ val_out/
 res_out/
 dataset_test/
 dataset_test_2/
+hf_export/
 
 # Real floor textures the user may drop in (keep folder + README)
 assets/floors/*

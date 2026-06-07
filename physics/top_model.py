@@ -75,8 +75,12 @@ def _stacked_cone(z0: float, z1: float, r0: float, r1: float,
     return out
 
 
-def _cone_geoms(rng: np.random.Generator, friction: str) -> str:
-    """Trompo conico clasico (peonza): punta abajo, ancho arriba."""
+def _cone_geoms(rng: np.random.Generator, friction: str):
+    """Trompo conico clasico (peonza): punta abajo, ancho arriba.
+
+    Devuelve (xml, shape_info). shape_info describe la envolvente para colocar
+    los marcadores de color sobre la superficie.
+    """
     H = float(rng.uniform(0.045, 0.075))
     Rmax = float(rng.uniform(0.018, 0.030))
     body = _stacked_cone(0.0, H, 0.0012, Rmax, friction, n=8)
@@ -85,10 +89,10 @@ def _cone_geoms(rng: np.random.Generator, friction: str) -> str:
     stem_h = float(rng.uniform(0.006, 0.012))
     body += _geom("cylinder", f"{stem_r:.6f} {stem_h/2:.6f}", H + stem_h / 2,
                   friction, condim=3)
-    return body
+    return body, {"kind": "cone", "H": H, "Rmax": Rmax}
 
 
-def _acorn_geoms(rng: np.random.Generator, friction: str) -> str:
+def _acorn_geoms(rng: np.random.Generator, friction: str):
     """Trompo tipo bellota: cono inferior + esfera/ovoide superior."""
     H = float(rng.uniform(0.030, 0.050))      # altura del cono inferior
     Rmid = float(rng.uniform(0.014, 0.022))   # radio donde acopla la esfera
@@ -97,10 +101,11 @@ def _acorn_geoms(rng: np.random.Generator, friction: str) -> str:
     # Esfera superior apoyada sobre el cono.
     sphere_z = H + Rs * 0.55
     body += _geom("sphere", f"{Rs:.6f}", sphere_z, friction, condim=3)
-    return body
+    return body, {"kind": "acorn", "H": H, "Rmid": Rmid, "Rs": Rs,
+                  "sphere_z": sphere_z}
 
 
-def _oval_geoms(rng: np.random.Generator, friction: str) -> str:
+def _oval_geoms(rng: np.random.Generator, friction: str):
     """Trompo ovalado: elipsoide alargado (CM alto, inestable) + punta."""
     a = float(rng.uniform(0.013, 0.019))            # semieje transversal
     c = float(a * rng.uniform(1.6, 2.4))            # semieje vertical (alargado)
@@ -109,7 +114,7 @@ def _oval_geoms(rng: np.random.Generator, friction: str) -> str:
     # Elipsoide centrado de modo que su polo inferior quede sobre el vastago.
     zc = stem_top + c * 0.9
     body += _geom("ellipsoid", f"{a:.6f} {a:.6f} {c:.6f}", zc, friction, condim=3)
-    return body
+    return body, {"kind": "oval", "a": a, "c": c, "zc": zc}
 
 
 _GEOM_BUILDERS = {
@@ -127,6 +132,112 @@ def _light_dir(azimuth_deg: float, elevation_deg: float):
     fy = math.cos(el) * math.sin(az)
     fz = math.sin(el)
     return (-fx, -fy, -fz)
+
+
+# --------------------------------------------------------------------------- #
+# Marcadores de color para que VideoMamba observe q y omega                    #
+# --------------------------------------------------------------------------- #
+# >=3 puntos de color NO colineales, pegados al cuerpo, en posiciones y colores
+# aleatorios por episodio. Hacen visualmente OBSERVABLES la orientacion
+# (cuaternion) y la velocidad angular: al girar el trompo, los puntos trazan
+# circulos cuyo patron determina q y omega. Son geoms SOLO visuales
+# (contype=0/conaffinity=0): NO colisionan ni cambian la inercia (que es
+# explicita), asi que la dinamica es identica con o sin marcadores.
+N_MARKERS_DEFAULT = 4
+
+
+def _surface_point(shape: dict, u: float, theta: float):
+    """Punto (x,y,z) en la superficie del cuerpo y su normal exterior aprox.
+
+    u in [0,1] parametriza la altura/latitud; theta es el azimut.
+    """
+    kind = shape["kind"]
+    ct, st = math.cos(theta), math.sin(theta)
+    if kind == "cone":
+        H, Rmax = shape["H"], shape["Rmax"]
+        z = (0.40 + 0.52 * u) * H            # zona ancha del cono
+        r = Rmax * (z / H)
+        p = np.array([r * ct, r * st, z])
+        n = np.array([ct, st, 0.0])          # normal aprox radial
+    elif kind == "acorn":
+        Rs, cz = shape["Rs"], shape["sphere_z"]
+        phi = (0.28 + 0.55 * u) * math.pi    # evita los polos exactos
+        sp, cp = math.sin(phi), math.cos(phi)
+        n = np.array([sp * ct, sp * st, cp])
+        p = np.array([0.0, 0.0, cz]) + Rs * n
+    else:  # oval (elipsoide)
+        a, c, zc = shape["a"], shape["c"], shape["zc"]
+        phi = (0.25 + 0.55 * u) * math.pi
+        sp, cp = math.sin(phi), math.cos(phi)
+        p = np.array([a * sp * ct, a * sp * st, zc + c * cp])
+        n = np.array([sp * ct / a, sp * st / a, cp / c])
+        nn = np.linalg.norm(n)
+        n = n / nn if nn > 1e-9 else np.array([ct, st, 0.0])
+    return p, n
+
+
+def _hsv_to_rgb(h: float, s: float, v: float):
+    import colorsys
+    return colorsys.hsv_to_rgb(h % 1.0, s, v)
+
+
+def sample_markers(shape: dict, rng: np.random.Generator,
+                   n: int = N_MARKERS_DEFAULT):
+    """Muestrea n marcadores no colineales sobre la superficie del cuerpo.
+
+    Devuelve lista de dicts {pos:[x,y,z] (local), rgba:[r,g,b,1], radius}.
+    """
+    char_r = {"cone": shape.get("Rmax"),
+              "acorn": shape.get("Rs"),
+              "oval": shape.get("a")}[shape["kind"]]
+    rm = float(np.clip(char_r * 0.22, 0.003, 0.006))  # radio del marcador (m)
+
+    # Azimuts repartidos (evita colinealidad) + jitter; alturas aleatorias.
+    base_h = float(rng.uniform(0.0, 1.0))
+    for _ in range(8):  # reintenta si saliesen casi colineales
+        markers = []
+        positions = []
+        for i in range(n):
+            theta = (2.0 * math.pi * i / n) + float(rng.uniform(-0.45, 0.45))
+            u = float(np.clip(base_h + rng.uniform(-0.35, 0.35) + 0.0, 0.0, 1.0))
+            u = float(rng.uniform(0.0, 1.0)) if i == 0 else u
+            p, normal = _surface_point(shape, u, theta)
+            p = p + normal * (rm * 0.55)      # protruye hacia afuera
+            positions.append(p)
+        P = np.array(positions)
+        # No colineal: el area del triangulo de los 3 primeros no es ~0.
+        v1, v2 = P[1] - P[0], P[2] - P[0]
+        if np.linalg.norm(np.cross(v1, v2)) > (char_r ** 2) * 0.05:
+            break
+
+    # Colores distintos y saturados (tonos repartidos en el circulo HSV).
+    hue0 = float(rng.uniform(0.0, 1.0))
+    markers = []
+    for i, p in enumerate(positions):
+        hue = hue0 + i / n + float(rng.uniform(-0.04, 0.04))
+        r, g, b = _hsv_to_rgb(hue, float(rng.uniform(0.75, 1.0)),
+                              float(rng.uniform(0.85, 1.0)))
+        markers.append({
+            "pos": [float(p[0]), float(p[1]), float(p[2])],
+            "rgba": [round(r, 4), round(g, 4), round(b, 4), 1.0],
+            "radius": round(rm, 5),
+        })
+    return markers
+
+
+def _markers_xml(markers) -> str:
+    """Geoms de marcador: esferas pequenas SOLO visuales (sin colision)."""
+    out = ""
+    for i, m in enumerate(markers):
+        x, y, z = m["pos"]
+        r, g, b, a = m["rgba"]
+        out += (
+            f'      <geom name="marker_{i}" type="sphere" '
+            f'size="{m["radius"]:.5f}" pos="{x:.6f} {y:.6f} {z:.6f}" '
+            f'rgba="{r:.4f} {g:.4f} {b:.4f} {a:.2f}" '
+            f'contype="0" conaffinity="0" group="2"/>\n'
+        )
+    return out
 
 
 def build_top_model_xml(params, floor_asset_xml: str) -> str:
@@ -149,7 +260,15 @@ def build_top_model_xml(params, floor_asset_xml: str) -> str:
     )
 
     # Geometria del cuerpo segun el tipo.
-    body_geoms = _GEOM_BUILDERS[params.top_type](rng, friction)
+    body_geoms, shape = _GEOM_BUILDERS[params.top_type](rng, friction)
+
+    # Marcadores de color (>=3, no colineales, posiciones/colores aleatorios)
+    # pegados al cuerpo, para que VideoMamba observe q y omega. Se guardan en
+    # params.markers para trazabilidad en la metadata del JSON.
+    n_markers = getattr(params, "n_markers", None) or N_MARKERS_DEFAULT
+    markers = sample_markers(shape, rng, n=int(n_markers))
+    params.markers = markers
+    marker_geoms = _markers_xml(markers)
 
     # Punta de contacto (esfera 5 mm) en el origen del cuerpo. condim=6 para
     # habilitar friccion torsional (spin) y de rodadura en el contacto.
@@ -202,7 +321,7 @@ def build_top_model_xml(params, floor_asset_xml: str) -> str:
       <freejoint name="root"/>
       <inertial pos="0 0 {params.com_height:.6f}" mass="{params.mass:.6f}"
                 diaginertia="{params.Ixx:.8e} {params.Iyy:.8e} {params.Izz:.8e}"/>
-{tip_geom}{body_geoms}    </body>
+{tip_geom}{body_geoms}{marker_geoms}    </body>
   </worldbody>
 </mujoco>
 """

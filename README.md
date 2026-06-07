@@ -121,7 +121,13 @@ python main.py --mode video --n 1000 --out dataset
 Flags de `main.py`: `--mode {video,trajectories}`, `--n`, `--out`,
 `--resume-from`, `--top-type {cone,acorn,oval,random}`,
 `--resolution {224,480}`, `--subframes {2,4}`, `--cooling-interval`,
-`--save-mp4`, `--real-floor-prob`, `--jpg-quality`, `--seed`, `--floors-dir`.
+`--save-mp4`, `--real-floor-prob`, `--post-fall-seconds` (default 1.0),
+`--jpg-quality`, `--seed`, `--floors-dir`.
+
+```bash
+# Exportar a parquet para HuggingFace (comando APARTE; ver Seccion 14)
+python export_to_parquet.py --in dataset --out hf_export --what all
+```
 (`--seed` fija la semilla base reproducible; si se omite, se genera una y se
 imprime para poder reproducir el run.)
 
@@ -152,6 +158,27 @@ no MP4. Razones:
 3. Compatible con dataloaders estándar y **paralelizable**.
 
 `--save-mp4` es **solo para inspección visual**, no para entrenar.
+
+### Marcadores de color (para observar q y ω)
+
+Cada trompo lleva **≥3 puntos de color no colineales** (por defecto 4) pegados
+al cuerpo, en **posiciones y colores aleatorios por episodio**. Al girar el
+trompo, los puntos trazan círculos cuyo patrón hace **visualmente observables**
+la orientación (cuaternión) y la velocidad angular (ω) — justo lo que regresa
+VideoMamba. Son geoms **solo visuales** (`contype=0`/`conaffinity=0`): no
+colisionan ni cambian la inercia (que es explícita), así que la dinámica es
+idéntica con o sin marcadores. Sus posiciones locales y colores se guardan en
+`metadata.markers` de cada JSON (y en `markers_json` del parquet) para
+trazabilidad. Ajusta el número con la constante `N_MARKERS_DEFAULT` en
+[physics/top_model.py](physics/top_model.py).
+
+### Cuánto se graba: hasta la caída + ~1 s
+
+El vídeo registra **todo el movimiento inicial hasta la caída y solo
+`--post-fall-seconds` segundos más** (default `1.0`; usa `0.5` si quieres menos)
+y como tope absoluto 20 s. Esto evita grabar minutos de un trompo ya tumbado o
+"durmiendo". El instante de caída se reporta por episodio en consola
+(`[EP 0000] ... fall=1.79s dur=2.8s ...`) y queda en `metadata.fall_time`.
 
 Cada episodio trae un `index.json` que alinea cada `frame_XXXXX.jpg` con su
 timestamp y con el índice del estado físico (100 Hz):
@@ -334,11 +361,12 @@ de `from_xml_string`), sin ficheros temporales (headless-safe).
 
 ## 10. Estimación de almacenamiento
 
-A 224² con post-processing y suelos texturizados, **~5–15 MB por episodio** de
-vídeo (≈360 frames JPG a calidad 95; el tamaño sube con texturas/ruido de alta
-frecuencia). Ej.: 500 episodios ≈ **2.5–7.5 GB**. Baja la calidad con
-`--jpg-quality` (p.ej. 85) para reducir el tamaño. Las trayectorias son
-~0.2–0.5 MB por episodio (solo JSON).
+A 224² con post-processing y suelos texturizados, **~35–40 KB por frame JPG**
+(calidad 95). Como el vídeo se graba hasta la caída + ~1 s, la duración (y por
+tanto el nº de frames) varía mucho según la física: episodios cortos ~2–3 s
+(~60–90 frames ≈ 2.5–3.5 MB) y largos ~8–12 s (~250–360 frames ≈ 9–14 MB).
+Baja la calidad con `--jpg-quality` (p.ej. 85) para reducir el tamaño. Las
+trayectorias son ~0.2–0.5 MB por episodio (solo JSON).
 
 ---
 
@@ -373,11 +401,22 @@ El bloque `metadata.physics` incluye `mass`, `inertia_diag=[Ixx,Iyy,Izz]`,
 `coulomb_torque` (fc), `viscous_friction` (fv), `initial_spin`,
 `initial_tilt_rad` e `initial_position`.
 
-Ver `metadata` (episodio, seed, modo, tipo de trompo, `floor_type`, `physics`,
-`simulation`, `fall_time`, `valid`) y `frames` (`t`, `q=[w,x,y,z]`,
-`omega` (mundo), `x`/`v` (CM mundo), `has_contact`, `contact_force`,
-`angle_from_vertical`, `fall_detected`). Los estados están **siempre a 100 Hz**
-en ambos modos; en `trajectories`, `video_fps` es `null`.
+`metadata` también incluye `markers` (los ≥3 puntos de color) y, en
+`simulation`, `post_fall_seconds` (segundos grabados tras la caída).
+
+Cada entrada de `frames` tiene: `t`, `q=[w,x,y,z]`, `omega` (mundo), `x`/`v`
+(CM mundo), `has_contact`, `contact_force`, `angle_from_vertical`,
+`fall_detected` y `motion_state`. Distinción importante entre las dos flags de
+caída:
+
+- **`fall_detected`** (bool): latch **monótono** — una vez `true`, sigue `true`.
+  Úsalo como cutoff de integración para la UDE/Kalman.
+- **`motion_state`** (string): estado **instantáneo** de ese frame:
+  `"spinning"` (de pie y girando), `"fallen"` (se cayó, sigue moviéndose) o
+  `"stopped"` (prácticamente detenido, ‖ω‖≈0).
+
+Los estados están **siempre a 100 Hz** en ambos modos; en `trajectories`,
+`video_fps` es `null`.
 
 `omega` y `v` se toman de `data.cvel` (velocidad espacial com-based con ejes
 alineados al mundo), evitando la ambigüedad local/mundo de `qvel` del freejoint.
@@ -391,4 +430,48 @@ alineados al mundo), evitando la ambigüedad local/mundo de `qvel` del freejoint
 t=0), duración razonable, `fall_detected` monótono y consistencia de
 `fall_time`. Los fallos "duros" ponen `metadata.valid=false` (pero **no**
 descartan el episodio); los "suaves" (energía/duración) solo avisan.
+
+---
+
+## 14. Exportar a HuggingFace (.parquet)
+
+`export_to_parquet.py` convierte la carpeta de salida (frames JPG + JSON) en
+`.parquet` listos para el Hub. Usa la librería `datasets` (los frames se guardan
+con la feature `Image`, bytes JPG embebidos, así el dataset se renderiza solo en
+el Hub).
+
+```bash
+pip install datasets pyarrow
+
+# A parquet local (frames + states + trajectories segun lo que exista)
+python export_to_parquet.py --in dataset --out hf_export --what all
+
+# Directo al Hub (requiere `huggingface-cli login`)
+python export_to_parquet.py --in dataset --out hf_export \
+       --push-to-hub usuario/trompos-sim --private
 ```
+
+Splits que genera:
+
+- **frames**: 1 fila por frame de vídeo = `image` (224×224) + label
+  `q`(4) + `omega`(3) del estado alineado, más `motion_state`, `fall_detected`,
+  priors físicos (`mass`, `inertia_diag`, `fc`, `fv`, `ell`) y `markers_json`.
+  → VideoMamba.
+- **states** / **trajectories**: 1 fila por estado a 100 Hz (sin imagen) con
+  `q`, `omega`, `x`, `v`, `motion_state`, priors, etc. → UDE.
+
+Cargar luego:
+
+```python
+from datasets import load_dataset
+frames = load_dataset("parquet", data_files="hf_export/frames.parquet", split="train")
+print(frames[0]["image"], frames[0]["q"], frames[0]["omega"])
+# o desde el Hub:  load_dataset("usuario/trompos-sim", "frames")
+```
+
+> **Importante (segfault):** ejecuta la exportación como un **comando aparte**
+> (proceso separado del de generación). Mezclar en el MISMO proceso el contexto
+> GL de MuJoCo (render del vídeo) con `datasets`/`pyarrow`/PIL produce un
+> segfault en librerías nativas. El flujo normal ya son dos comandos
+> (`main.py` para generar, `export_to_parquet.py` para exportar), así que no es
+> un problema en la práctica.
