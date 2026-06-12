@@ -204,8 +204,15 @@ def simulate_episode(mods, params, args):
         return False
 
     # Estado inicial (t=0, indice de estado 0)
-    log_current(0.0)
+    WARMUP_STEPS = 50
+    for _ in range(WARMUP_STEPS):
+        has_c, _ = _read_contact(mujoco, model, data, floor_gid, top_bid)
+        _apply_pivot_friction(data, vadr, fc, fv, has_c)
+        mujoco.mj_step(model, data)
+     
     step_count = 0
+    data.time = 0.0
+    log_current(0.0)
 
     # ===================== MODO TRAYECTORIAS ===================== #
     if mode == "trajectories":
