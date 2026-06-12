@@ -247,8 +247,7 @@ def sample_episode_params(
     coulomb_torque = float(rng.uniform(1e-6, 5e-5))
     viscous_friction = float(rng.uniform(1e-7, 1e-5))
 
-    # --- Altura de la punta en t=0 (casi apoyado) ---
-    position_z = float(rng.uniform(0.0005, 0.002))
+    position_z = 0.0
 
     
 
