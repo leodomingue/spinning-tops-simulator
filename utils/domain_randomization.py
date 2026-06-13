@@ -247,7 +247,11 @@ def sample_episode_params(
     coulomb_torque = float(rng.uniform(1e-6, 5e-5))
     viscous_friction = float(rng.uniform(1e-7, 1e-5))
 
-    position_z = float(rng.uniform(0.0001, 0.0005))
+    # --- Altura de la punta en t=0: APOYADO en el suelo (z=0).
+    # Antes nacia 1-5 mm sobre el suelo, caia e impactaba -> rebote y contacto
+    # intermitente. Ahora arranca tocando el suelo (la pequena penetracion
+    # inicial robusta la fija initial_conditions.set_initial_conditions). ---
+    position_z = 0.0
 
     
 
