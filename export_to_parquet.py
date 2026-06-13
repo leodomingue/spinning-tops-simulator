@@ -72,6 +72,7 @@ def _iter_frames(dataset_dir: str) -> Iterator[dict]:
         markers_json = json.dumps(meta.get("markers", []))
         ell = phys.get("pivot_to_com")
         ell = float(ell) if ell is not None else float("nan")
+        cam = meta.get("camera", {})
         for fr in index["frames"]:
             si = min(int(fr["state_idx"]), len(states) - 1)
             s = states[si]
@@ -98,6 +99,10 @@ def _iter_frames(dataset_dir: str) -> Iterator[dict]:
                 "ell": ell,
                 "seed": int(meta["seed"]),
                 "markers_json": markers_json,
+                "cam_azimuth": float(cam.get("azimuth", 0.0)),
+                "cam_elevation": float(cam.get("elevation", 0.0)),
+                "cam_distance": float(cam.get("distance", 0.0)),
+                "cam_fov": float(cam.get("fov", 60.0)),
             }
 
 
@@ -111,6 +116,7 @@ def _iter_states(dataset_dir: str, subdir: str) -> Iterator[dict]:
         ell = phys.get("pivot_to_com")
         ell = float(ell) if ell is not None else float("nan")
         markers_json = json.dumps(meta.get("markers", []))
+        cam = meta.get("camera", {})
         for s in sdoc["frames"]:
             yield {
                 "episode_id": int(meta["episode_id"]),
@@ -133,6 +139,10 @@ def _iter_states(dataset_dir: str, subdir: str) -> Iterator[dict]:
                 "ell": ell,
                 "seed": int(meta["seed"]),
                 "markers_json": markers_json,
+                "cam_azimuth": float(cam.get("azimuth", 0.0)),
+                "cam_elevation": float(cam.get("elevation", 0.0)),
+                "cam_distance": float(cam.get("distance", 0.0)),
+                "cam_fov": float(cam.get("fov", 60.0)),
             }
 
 
@@ -159,6 +169,10 @@ def _frames_features(ds):
         "fc": V("float32"), "fv": V("float32"), "ell": V("float32"),
         "seed": V("int64"),
         "markers_json": V("string"),
+        "cam_azimuth": V("float32"),
+        "cam_elevation": V("float32"),
+        "cam_distance": V("float32"),
+        "cam_fov": V("float32"),
     })
 
 
@@ -183,6 +197,10 @@ def _states_features(ds):
         "fc": V("float32"), "fv": V("float32"), "ell": V("float32"),
         "seed": V("int64"),
         "markers_json": V("string"),
+        "cam_azimuth": V("float32"),
+        "cam_elevation": V("float32"),
+        "cam_distance": V("float32"),
+        "cam_fov": V("float32"),
     })
 
 
