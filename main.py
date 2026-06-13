@@ -36,6 +36,8 @@ FALL_ANGLE_DEG = 70.0    # umbral de caida por angulo
 OMEGA_REST = 0.1         # rad/s, umbral de "spin ~ cero"
 VEL_REST = 0.01          # m/s, umbral de reposo lineal (modo video)
 POST_FALL_SECONDS = 0.5  # tras la caida se graba solo este extra (s)
+CONTACT_TOL = 0.0015     # m, tolerancia geometrica para has_contact de la punta
+                         # (>~ el micro-salto sub-mm; << cualquier despegue real)
 
 
 # --------------------------------------------------------------------------- #
@@ -60,8 +62,16 @@ def setup_gl_backend(mode: str, is_vast: bool) -> None:
 # --------------------------------------------------------------------------- #
 # Helpers de fisica (requieren mujoco; se importa dentro de run())             #
 # --------------------------------------------------------------------------- #
-def _read_contact(mujoco, model, data, floor_gid, top_bid):
-    """Devuelve (has_contact, fuerza_normal_total) entre el trompo y el suelo."""
+def _read_contact(mujoco, model, data, floor_gid, top_bid,
+                  tip_gid=-1, tip_radius=0.0, contact_tol=0.0):
+    """Devuelve (has_contact, fuerza_normal_total) entre el trompo y el suelo.
+
+    La fuerza viene de los contactos REALES de MuJoCo (penetracion). Ademas, si
+    la punta esta a <= contact_tol del suelo, se reporta has_contact=True aunque
+    MuJoCo no genere fuerza ese instante: esto evita el parpadeo de has_contact
+    por micro-saltos sub-milimetricos de la punta (la friccion de pivote se
+    aplica de forma consistente). Es SOLO reporte: NO cambia la dinamica.
+    """
     has = False
     fmag = 0.0
     f6 = np.zeros(6, dtype=np.float64)
@@ -75,6 +85,11 @@ def _read_contact(mujoco, model, data, floor_gid, top_bid):
             has = True
             mujoco.mj_contactForce(model, data, i, f6)
             fmag += abs(float(f6[0]))  # componente normal
+    # Deteccion geometrica robusta de la punta (solo si la fisica no la flageo).
+    if tip_gid >= 0:
+        tip_bottom_z = float(data.geom_xpos[tip_gid][2]) - tip_radius
+        if tip_bottom_z <= contact_tol:
+            has = True
     return has, fmag
 
 
@@ -94,7 +109,8 @@ def _apply_pivot_friction(data, vadr, fc, fv, has_contact):
     data.qfrc_applied[vadr + 5] = tau
 
 
-def _compute_state(mujoco, model, data, qadr, top_bid, floor_gid, angle_fn):
+def _compute_state(mujoco, model, data, qadr, top_bid, floor_gid, angle_fn,
+                   tip_gid=-1, tip_radius=0.0, contact_tol=0.0):
     """Extrae el estado fisico para el JSON (todo en frame MUNDO).
 
     omega y v se toman de ``data.cvel`` (velocidad espacial com-based, ejes
@@ -106,7 +122,8 @@ def _compute_state(mujoco, model, data, qadr, top_bid, floor_gid, angle_fn):
     omega = np.array(data.cvel[top_bid][0:3], dtype=np.float64)  # mundo
     v = np.array(data.cvel[top_bid][3:6], dtype=np.float64)      # mundo (CM)
     x = np.array(data.xipos[top_bid], dtype=np.float64)          # CM mundo
-    has_contact, fmag = _read_contact(mujoco, model, data, floor_gid, top_bid)
+    has_contact, fmag = _read_contact(mujoco, model, data, floor_gid, top_bid,
+                                      tip_gid, tip_radius, contact_tol)
     angle = angle_fn(q)
     return q, omega, v, x, has_contact, fmag, angle
 
@@ -165,6 +182,8 @@ def simulate_episode(mods, params, args):
 
     top_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "top")
     floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    tip_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "tip")
+    tip_radius = float(model.geom_size[tip_gid][0])  # radio de la esfera-punta
     qadr = int(model.jnt_qposadr[0])
     vadr = int(model.jnt_dofadr[0])
     fc = params.coulomb_torque
@@ -178,7 +197,8 @@ def simulate_episode(mods, params, args):
     def log_current(t):
         nonlocal fall_latched
         q, omega, v, x, has_c, fmag, angle = _compute_state(
-            mujoco, model, data, qadr, top_bid, floor_gid, angle_from_vertical_deg)
+            mujoco, model, data, qadr, top_bid, floor_gid, angle_from_vertical_deg,
+            tip_gid, tip_radius, CONTACT_TOL)
         wn = float(np.linalg.norm(omega))
         # Estado INSTANTANEO de ese frame (flag pedida en el JSON).
         if wn < OMEGA_REST:
@@ -204,20 +224,14 @@ def simulate_episode(mods, params, args):
         return False
 
     # Estado inicial (t=0, indice de estado 0)
-    WARMUP_STEPS = 50
-    for _ in range(WARMUP_STEPS):
-        has_c, _ = _read_contact(mujoco, model, data, floor_gid, top_bid)
-        _apply_pivot_friction(data, vadr, fc, fv, has_c)
-        mujoco.mj_step(model, data)
-     
-    step_count = 0
-    data.time = 0.0
     log_current(0.0)
+    step_count = 0
 
     # ===================== MODO TRAYECTORIAS ===================== #
     if mode == "trajectories":
         while True:
-            has_c, _ = _read_contact(mujoco, model, data, floor_gid, top_bid)
+            has_c, _ = _read_contact(mujoco, model, data, floor_gid, top_bid,
+                                     tip_gid, tip_radius, CONTACT_TOL)
             _apply_pivot_friction(data, vadr, fc, fv, has_c)
             mujoco.mj_step(model, data)
             step_count += 1
@@ -279,7 +293,8 @@ def simulate_episode(mods, params, args):
         cap_steps = _capture_steps(prev_step, target_step, args.subframes)
         subs = []
         while step_count < target_step:
-            has_c, _ = _read_contact(mujoco, model, data, floor_gid, top_bid)
+            has_c, _ = _read_contact(mujoco, model, data, floor_gid, top_bid,
+                                     tip_gid, tip_radius, CONTACT_TOL)
             _apply_pivot_friction(data, vadr, fc, fv, has_c)
             mujoco.mj_step(model, data)
             step_count += 1
