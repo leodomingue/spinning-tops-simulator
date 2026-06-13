@@ -157,8 +157,6 @@ class EpisodeParams:
             "initial_spin": float(self.spin),
             "initial_tilt_rad": float(self.tilt),
             "initial_position": [0.0, 0.0, float(self.position_z)],
-            "cam_azimuth":   float(self.cam_azimuth),
-            "cam_elevation": float(self.cam_elevation),
         }
 
 
