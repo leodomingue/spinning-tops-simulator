@@ -21,6 +21,16 @@ import mujoco
 
 from .top_model import TIP_RADIUS
 
+# La punta nace JUSTO tocando el suelo (penetracion 0 => fuerza inicial 0, sin
+# "patada" que la lance). La fuerza de contacto sube suave hasta mg en ~1 ms
+# (contacto criticamente amortiguado). has_contact ya es True en t=0 gracias al
+# margen de deteccion del contacto (TIP_CONTACT_MARGIN en top_model.py).
+REST_PENETRATION = 0.0
+
+
+def _quat_conjugate(q: np.ndarray) -> np.ndarray:
+    return np.array([q[0], -q[1], -q[2], -q[3]])
+
 
 def _axis_angle_to_quat(axis, angle: float) -> np.ndarray:
     """Eje-angulo -> cuaternion Hamilton [w,x,y,z]."""
@@ -69,11 +79,13 @@ def set_initial_conditions(model: mujoco.MjModel, data: mujoco.MjData, params,
     qadr = int(model.jnt_qposadr[0])  # primer (y unico) freejoint
     vadr = int(model.jnt_dofadr[0])
 
-    # --- Posicion: punta a 'position_z' del suelo => centro de la esfera
-    #     punta a position_z + TIP_RADIUS. ---
+    # --- Posicion: la punta APOYADA en el suelo (no cae del cielo). El centro
+    #     de la esfera-punta va a TIP_RADIUS sobre el suelo, menos una micro-
+    #     penetracion para que el contacto este activo desde t=0 sin rebote.
+    #     position_z=0 (apoyado); se deja por si se quisiera elevar. ---
     data.qpos[qadr + 0] = 0.0
     data.qpos[qadr + 1] = 0.0
-    data.qpos[qadr + 2] = params.position_z + TIP_RADIUS
+    data.qpos[qadr + 2] = params.position_z + TIP_RADIUS - REST_PENETRATION
 
     # --- Orientacion: identidad (eje de simetria Z local = vertical) + tilt
     #     pequeno alrededor de un eje horizontal aleatorio. ---
@@ -82,12 +94,27 @@ def set_initial_conditions(model: mujoco.MjModel, data: mujoco.MjData, params,
     q_tilt = _axis_angle_to_quat(tilt_axis, params.tilt)
     data.qpos[qadr + 3: qadr + 7] = q_tilt
 
-    # --- Velocidad: spin alrededor del eje de simetria (Z local). Pequena
-    #     perturbacion transversal para sembrar nutacion realista. ---
-    eps = float(rng.uniform(0.2, 0.8)) * np.sign(rng.uniform(-1, 1) or 1.0)
+    # --- Velocidad: arrancar en PRECESION ESTACIONARIA (no "soltar desde el
+    #     reposo"). Soltar con spin puro induce una nutacion grande que hace
+    #     SALTAR la punta (contacto intermitente), sobre todo en oval/acorn con
+    #     CM alto. En precesion estacionaria el eje describe un cono sin nutar,
+    #     asi que la punta queda CLAVADA y el contacto es continuo.
+    #
+    #     Aproximacion de trompo rapido (raiz lenta):
+    #         phidot = m*g*l / (I_spin * spin)      (precesion sobre +Z mundo)
+    #     omega_world = phidot * z_mundo + spin * eje_simetria
+    #     Se convierte a frame LOCAL (qvel angular del freejoint es local). ---
+    spin = float(params.spin)
+    Ispin = float(params.Izz)                  # inercia del eje de spin (Z local)
+    ell = float(params.com_height + TIP_RADIUS)
+    e_sym = get_symmetry_axis_world(q_tilt)    # eje de simetria en el mundo
+    if abs(spin) > 1e-9 and Ispin > 1e-12:
+        phidot = (params.mass * 9.81 * ell) / (Ispin * spin)
+    else:
+        phidot = 0.0
+    omega_world = phidot * np.array([0.0, 0.0, 1.0]) + spin * e_sym
+    omega_local = _quat_rotate(_quat_conjugate(q_tilt), omega_world)
     data.qvel[vadr + 0: vadr + 3] = 0.0                 # lineal mundo = 0
-    data.qvel[vadr + 3] = eps                            # wx local (seed nutacion)
-    data.qvel[vadr + 4] = eps * 0.7                      # wy local
-    data.qvel[vadr + 5] = params.spin                    # wz local = spin
+    data.qvel[vadr + 3: vadr + 6] = omega_local         # angular local
 
     mujoco.mj_forward(model, data)
