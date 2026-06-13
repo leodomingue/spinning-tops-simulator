@@ -82,6 +82,13 @@ class StateLogger:
             # Marcadores de color (constantes por episodio): posiciones locales
             # y colores de los >=3 puntos no colineales pegados al cuerpo.
             "markers": (self.params.markers or []),
+            "camera": {
+                "azimuth": float(self.params.cam_azimuth),
+                "elevation": float(self.params.cam_elevation),
+                "distance": float(self.params.cam_distance),
+                "fov": float(self.params.cam_fov),
+                "lookat": [float(x) for x in self.params.cam_lookat],
+            },
             "simulation": {
                 "physics_timestep": 0.001,
                 "state_sample_rate_hz": 100,
